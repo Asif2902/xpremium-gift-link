@@ -119,9 +119,23 @@ async function xGet(user, op, variables, extraQuery) {
     `https://x.com/i/api/graphql/${op.id}/${op.name}?${q.toString()}`,
     { headers: xHeaders(user), signal: AbortSignal.timeout(30000) }
   );
-  if (res.status !== 200) throw new Error(`X_HTTP_${res.status}`);
+  if (res.status === 401 || res.status === 403) {
+    const e = new Error("X_AUTH_REJECTED");
+    e.xStatus = res.status;
+    e.xAuth = true;
+    throw e;
+  }
+  if (res.status !== 200) {
+    const e = new Error(`X_HTTP_${res.status}`);
+    e.xStatus = res.status;
+    throw e;
+  }
   const data = await res.json();
-  if (data && data.errors && data.errors.length) throw new Error("X_REJECTED");
+  if (data && data.errors && data.errors.length) {
+    const e = new Error("X_REJECTED");
+    e.xAuth = JSON.stringify(data.errors).slice(0, 500).includes("authenticate");
+    throw e;
+  }
   return data;
 }
 async function xPost(user, op, variables) {
@@ -131,10 +145,50 @@ async function xPost(user, op, variables) {
     body: JSON.stringify({ variables, queryId: op.id }),
     signal: AbortSignal.timeout(30000),
   });
-  if (res.status !== 200) throw new Error(`X_HTTP_${res.status}`);
+  if (res.status === 401 || res.status === 403) {
+    const e = new Error("X_AUTH_REJECTED");
+    e.xStatus = res.status;
+    e.xAuth = true;
+    throw e;
+  }
+  if (res.status !== 200) {
+    const e = new Error(`X_HTTP_${res.status}`);
+    e.xStatus = res.status;
+    throw e;
+  }
   const data = await res.json();
-  if (data && data.errors && data.errors.length) throw new Error("X_REJECTED");
+  if (data && data.errors && data.errors.length) {
+    const e = new Error("X_REJECTED");
+    e.xAuth = JSON.stringify(data.errors).slice(0, 500).includes("authenticate");
+    throw e;
+  }
   return data;
+}
+function isAuthError(e) {
+  return Boolean(e && (e.xAuth || e.message === "X_AUTH_REJECTED"));
+}
+function authExpiredResponse(res) {
+  return res.status(401).json({
+    error:
+      "X rejected the saved login (expired or mismatched cookies). Refresh BOTH X_AUTH_TOKEN and X_CT0 together: log in to x.com, F12 → Application → Cookies → https://x.com, copy fresh values into .env, restart the server, and try again.",
+  });
+}
+// Read-only parse of a PremiumGiftingQuery response. Returns one of:
+//   { status: "not_found" } | { status: "mismatch" } |
+//   { status: "ok", recipientId, screenName, eligible }
+// Never throws; callers map the status to user-facing messages.
+function parseRecipient(identity, handle) {
+  const found = identity?.data?.user?.result;
+  if (!found || !found.rest_id) return { status: "not_found" };
+  if (String(found.core?.screen_name || "").toLowerCase() !== handle) {
+    return { status: "mismatch" };
+  }
+  return {
+    status: "ok",
+    recipientId: found.rest_id,
+    screenName: found.core.screen_name,
+    eligible: Boolean(found.premium_gifting_eligible),
+  };
 }
 // The URL must be the official Stripe checkout page for exactly this session.
 function isOfficialCheckoutUrl(link, id) {
@@ -160,6 +214,58 @@ app.get("/api/plans", (req, res) => {
 
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, configured: xConfigured() });
+});
+
+// Read-only recipient probe (no checkout created, no payment).
+// Mirrors x_gift_bot's POST /api/check: verifies the handle exists and can
+// receive Premium gifts, and returns the profile X reports for confirmation.
+// X transport/auth failures are NEVER reported as "ineligible".
+app.post("/api/check-recipient", async (req, res) => {
+  try {
+    const handle = cleanHandle((req.body || {}).recipient);
+    if (!isValidHandle(handle)) {
+      return res
+        .status(400)
+        .json({ error: "Enter a valid X username (letters, numbers, _ — max 15 chars)." });
+    }
+    if (!xConfigured()) {
+      return res.status(500).json({
+        error:
+          "Server is not configured: X cookies are missing. Put your auth_token and ct0 in .env (see .env.example).",
+      });
+    }
+    let identity;
+    try {
+      identity = await xGet(handle, OPS.identity, { screenName: handle });
+    } catch (e) {
+      if (isAuthError(e)) return authExpiredResponse(res);
+      return res.status(502).json({ error: "Could not reach X. Check connection and try again." });
+    }
+    const parsed = parseRecipient(identity, handle);
+    if (parsed.status === "not_found") {
+      return res.json({ eligible: false, handle, message: "Recipient was not found on X." });
+    }
+    if (parsed.status === "mismatch") {
+      return res.json({ eligible: false, handle, message: "Recipient identity could not be verified." });
+    }
+    if (!parsed.eligible) {
+      return res.json({
+        eligible: false,
+        handle,
+        screenName: parsed.screenName,
+        message: "This account cannot receive Premium gifts.",
+      });
+    }
+    return res.json({
+      eligible: true,
+      handle,
+      screenName: parsed.screenName,
+      message: "This account can receive Premium gifts.",
+    });
+  } catch {
+    console.error("recipient check failed");
+    return res.status(502).json({ error: "Could not check the recipient. Try again." });
+  }
 });
 
 // Ask X to create the official gift checkout session and return its URL.
@@ -190,20 +296,21 @@ app.post("/api/create-checkout", async (req, res) => {
     let identity;
     try {
       identity = await xGet(handle, OPS.identity, { screenName: handle });
-    } catch {
+    } catch (e) {
+      if (isAuthError(e)) return authExpiredResponse(res);
       return res.status(502).json({ error: "Could not reach X. Check connection and try again." });
     }
-    const found = identity?.data?.user?.result;
-    if (!found || !found.rest_id) {
+    const parsed = parseRecipient(identity, handle);
+    if (parsed.status === "not_found") {
       return res.status(404).json({ error: "Recipient was not found on X." });
     }
-    if (String(found.core?.screen_name || "").toLowerCase() !== handle) {
+    if (parsed.status === "mismatch") {
       return res.status(400).json({ error: "Recipient identity could not be verified." });
     }
-    if (!found.premium_gifting_eligible) {
+    if (!parsed.eligible) {
       return res.status(400).json({ error: "This recipient cannot receive Premium gifts." });
     }
-    const recipientId = found.rest_id;
+    const recipientId = parsed.recipientId;
 
     // 2. Regional price quote: X's price must exactly match our plan.
     let quote;
@@ -211,7 +318,8 @@ app.post("/api/create-checkout", async (req, res) => {
       quote = await xGet(handle, OPS.quote, { stripeId: plan.product }, {
         features: '{"subscriptions_marketing_page_fetch_promotions":true}',
       });
-    } catch {
+    } catch (e) {
+      if (isAuthError(e)) return authExpiredResponse(res);
       return res.status(502).json({ error: "Could not verify the plan price with X. Try again." });
     }
     const product = quote?.data?.web_subscription_product_details_by_rest_id;
@@ -237,7 +345,17 @@ app.post("/api/create-checkout", async (req, res) => {
         external_product_id: plan.product,
         gift_recipient: recipientId,
       });
-    } catch {
+    } catch (e) {
+      if (isAuthError(e)) return authExpiredResponse(res);
+      // X answered but refused the gift: recipient restriction or the sending
+      // account's gifting limit. X exposes no "gifts remaining" query, so this
+      // refusal IS the sender-side check. Never retry blindly on refusals.
+      if (e && e.message === "X_REJECTED") {
+        return res.status(502).json({
+          error:
+            "X refused to create the gift (recipient restriction or the sending account's gifting limit). No link generated; do not retry repeatedly.",
+        });
+      }
       return res.status(502).json({ error: "X did not create the checkout. Try again." });
     }
     const gift = created?.data?.onetimepurchase_gift || {};
@@ -250,7 +368,7 @@ app.post("/api/create-checkout", async (req, res) => {
 
     // Never log secrets, cookies, tokens, or full X responses.
     console.log(`checkout created: plan=${plan.id} months=${plan.months}`);
-    return res.json({ url: gift.session_url });
+    return res.json({ url: gift.session_url, recipient: { handle, screenName: parsed.screenName } });
   } catch {
     // Never leak API internals or secrets to the browser.
     console.error("checkout failed");
@@ -258,7 +376,12 @@ app.post("/api/create-checkout", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`xpremium-gift-link running on http://localhost:${PORT}`);
-  if (!xConfigured()) console.log("WARNING: X credentials are not set (see .env.example).");
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`xpremium-gift-link running on http://localhost:${PORT}`);
+    if (!xConfigured()) console.log("WARNING: X credentials are not set (see .env.example).");
+  });
+}
+
+// Exported for fixture-based tests without starting the server.
+module.exports = { app, parseRecipient, isOfficialCheckoutUrl };

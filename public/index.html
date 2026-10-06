@@ -18,6 +18,10 @@
   input[type="text"], input[type="email"] { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 15px; }
   button { margin-top: 18px; width: 100%; padding: 12px; font-size: 16px; border: 0; border-radius: 8px; background: #111; color: #fff; cursor: pointer; }
   button:disabled { opacity: .6; cursor: default; }
+  button.secondary { background: #fff; color: #111; border: 1px solid #ccc; margin-top: 10px; }
+  #profile { display: none; margin-top: 12px; border: 1px solid #ddd; border-radius: 8px; padding: 12px; background: #fafafa; font-size: 14px; }
+  #profile strong { display: block; font-size: 15px; }
+  #profile small { color: #555; }
   .msg { margin-top: 14px; font-size: 14px; }
   .error { color: #b00020; }
   .ok { color: #0a7a2e; }
@@ -40,6 +44,12 @@
 
   <label for="recipient">Recipient X username (required)</label>
   <input id="recipient" type="text" placeholder="@username" autocomplete="off" maxlength="16" />
+  <button id="check" type="button" class="secondary">Check Recipient</button>
+
+  <div id="profile">
+    <strong id="profileName"></strong>
+    <small id="profileDetail"></small>
+  </div>
 
   <button id="generate">Generate Link</button>
 
@@ -59,12 +69,27 @@
   var plansEl = document.getElementById("plans");
   var statusEl = document.getElementById("status");
   var recipientEl = document.getElementById("recipient");
+  var checkBtn = document.getElementById("check");
+  var profileEl = document.getElementById("profile");
+  var profileNameEl = document.getElementById("profileName");
+  var profileDetailEl = document.getElementById("profileDetail");
   var btn = document.getElementById("generate");
   var resultEl = document.getElementById("result");
   var urlEl = document.getElementById("checkoutUrl");
   var openEl = document.getElementById("openCheckout");
   var selectedPlan = null;
   var plans = [];
+  // Handle verified by the read-only recipient check. Generate requires it
+  // to match the current input; the server still re-verifies on generate.
+  var verifiedHandle = null;
+
+  function cleanHandle(v) { return String(v || "").trim().replace(/^@/, "").toLowerCase(); }
+
+  function clearVerification() {
+    verifiedHandle = null;
+    profileEl.style.display = "none";
+  }
+  recipientEl.addEventListener("input", clearVerification);
 
   function setStatus(msg, kind) {
     statusEl.textContent = msg || "";
@@ -110,12 +135,44 @@
     plansEl.innerHTML = "<p class='sub'>Could not load plans.</p>";
   });
 
+  checkBtn.onclick = function () {
+    setStatus("");
+    resultEl.style.display = "none";
+    clearVerification();
+    var recipient = recipientEl.value.trim();
+    if (!recipient) { setStatus("Enter the recipient X username.", "error"); return; }
+    checkBtn.disabled = true;
+    checkBtn.textContent = "Checking…";
+    fetch("/api/check-recipient", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recipient: recipient })
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); }).then(function (out) {
+      if (!out.ok) { setStatus((out.d && out.d.error) || "Could not check the recipient.", "error"); return; }
+      if (!out.d.eligible) { setStatus((out.d && out.d.message) || "This account cannot receive Premium gifts.", "error"); return; }
+      verifiedHandle = out.d.handle;
+      profileNameEl.textContent = "@" + out.d.screenName;
+      profileDetailEl.textContent = "Can receive Premium gifts — safe to generate the link.";
+      profileEl.style.display = "block";
+      setStatus("Recipient verified.", "ok");
+    }).catch(function () {
+      setStatus("Network error. Try again.", "error");
+    }).finally(function () {
+      checkBtn.disabled = false;
+      checkBtn.textContent = "Check Recipient";
+    });
+  };
+
   btn.onclick = function () {
     setStatus("");
     resultEl.style.display = "none";
     if (!selectedPlan) { setStatus("Please select a plan.", "error"); return; }
     var recipient = recipientEl.value.trim();
     if (!recipient) { setStatus("Enter the recipient X username.", "error"); return; }
+    if (!verifiedHandle || verifiedHandle !== cleanHandle(recipient)) {
+      setStatus("Check the recipient first — verify the profile above, then generate.", "error");
+      return;
+    }
     btn.disabled = true;
     btn.textContent = "Generating…";
     fetch("/api/create-checkout", {
@@ -130,7 +187,8 @@
       urlEl.value = out.d.url;
       openEl.href = out.d.url;
       resultEl.style.display = "block";
-      setStatus("Official checkout link generated.", "ok");
+      var who = (out.d.recipient && out.d.recipient.screenName) ? "@" + out.d.recipient.screenName : recipient;
+      setStatus("Official checkout link generated for " + who + ".", "ok");
     }).catch(function () {
       setStatus("Network error. Try again.", "error");
     }).finally(function () {

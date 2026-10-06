@@ -40,7 +40,16 @@ npm run dev    # or: npm start
 
 Open http://localhost:3000
 
-Flow: Select plan → enter recipient X username → Generate Link → Open Official Checkout.
+Flow: Select plan → enter recipient X username → Check Recipient (shows the
+profile X reports + whether it can receive gifts) → Generate Link → Open Official Checkout.
+The check is read-only (`POST /api/check-recipient`, same as `x_gift_bot`'s
+`/api/check`) and never creates a session. Generate re-verifies everything
+server-side before asking X for the session.
+
+Sender-side note: X exposes no "gifts remaining" query, so there is no
+pre-check for the sending account's gifting limit — X enforces it when the
+gift is created. If X refuses at that point, the app reports it distinctly
+("X refused to create the gift…") instead of a generic connection error.
 
 ## Configuration
 
