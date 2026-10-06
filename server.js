@@ -15,15 +15,20 @@ const path = require("path");
 
 const PORT = Number(process.env.PORT || 3000);
 
-// Operator's own X account credentials (server-side only, never sent anywhere
+// Operator's own X account cookies (server-side only, never sent anywhere
 // except https://x.com). Get them from your browser after logging in to x.com:
 // DevTools -> Application -> Cookies -> https://x.com : auth_token and ct0.
-// Authorization is the "Bearer ..." value sent as the Authorization header and
-// UserAgent the User-Agent header (DevTools -> Network -> any x.com/i/api call).
+// Authorization/User-Agent below are X's public web-client identifiers, same
+// for everyone (defaults taken from x_gift_bot's setup wizard); override via
+// env only if X starts rejecting them.
+const DEFAULT_X_AUTHORIZATION =
+  "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA";
+const DEFAULT_X_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 const X_AUTH_TOKEN = (process.env.X_AUTH_TOKEN || "").trim();
 const X_CT0 = (process.env.X_CT0 || "").trim();
-const X_AUTHORIZATION = (process.env.X_AUTHORIZATION || "").trim();
-const X_USER_AGENT = (process.env.X_USER_AGENT || "").trim();
+const X_AUTHORIZATION = (process.env.X_AUTHORIZATION || "").trim() || DEFAULT_X_AUTHORIZATION;
+const X_USER_AGENT = (process.env.X_USER_AGENT || "").trim() || DEFAULT_X_USER_AGENT;
 
 // ---------------------------------------------------------------------------
 // Plan catalog. Each plan maps to exactly one X/Stripe Product + amount.
@@ -89,9 +94,9 @@ function isValidEmail(e) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 }
 function xConfigured() {
-  return Boolean(
-    X_AUTH_TOKEN && X_CT0 && X_AUTHORIZATION.startsWith("Bearer ") && X_USER_AGENT
-  );
+  // Only the personal cookies are required; Authorization/User-Agent have
+  // built-in public defaults (same for every X web client).
+  return Boolean(X_AUTH_TOKEN && X_CT0 && X_AUTHORIZATION.startsWith("Bearer ") && X_USER_AGENT);
 }
 function xHeaders(user) {
   return {
@@ -177,7 +182,7 @@ app.post("/api/create-checkout", async (req, res) => {
     if (!xConfigured()) {
       return res.status(500).json({
         error:
-          "Server is not configured: X credentials are missing. See .env.example (X_AUTH_TOKEN, X_CT0, X_AUTHORIZATION, X_USER_AGENT).",
+          "Server is not configured: X cookies are missing. Put your auth_token and ct0 in .env (see .env.example).",
       });
     }
 

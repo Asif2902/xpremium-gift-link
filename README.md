@@ -46,9 +46,8 @@ Flow: Select plan → enter recipient X username → Generate Link → Open Offi
 
 All credentials stay server-side in `.env` (never in frontend JS):
 
-- `X_AUTH_TOKEN`, `X_CT0` — from your browser: log in to x.com, F12 → Application → Cookies → `https://x.com`
-- `X_AUTHORIZATION` — the `Bearer ...` value from DevTools → Network → any `x.com/i/api` request header
-- `X_USER_AGENT` — the User-Agent header from the same request
+- `X_AUTH_TOKEN`, `X_CT0` — the ONLY personal values: your login cookies from your browser (x.com, F12 → Application → Cookies → `https://x.com`)
+- `X_AUTHORIZATION`, `X_USER_AGENT` — optional overrides only; the server already uses X's public web-client defaults (same as `x_gift_bot`'s setup wizard)
 - `MERCHANT_ACCOUNT_ID` — defaults to `acct_1Ika5JA3KZ32dPo1`
 - `PORT` — defaults to `3000`
 
