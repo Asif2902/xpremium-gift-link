@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>X Premium Gift — Official Checkout Link</title>
+<style>
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background: #f6f7f9; color: #111; }
+  .wrap { max-width: 560px; margin: 40px auto; padding: 24px; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { color: #555; margin: 0 0 20px; font-size: 14px; }
+  label { display: block; font-weight: 600; margin: 14px 0 6px; font-size: 14px; }
+  .plans { display: grid; gap: 8px; }
+  .plan { border: 1px solid #ddd; border-radius: 8px; padding: 10px 12px; display: flex; gap: 10px; align-items: center; cursor: pointer; }
+  .plan.selected { border-color: #111; background: #fafafa; }
+  .plan strong { display: block; }
+  .plan small { color: #555; }
+  input[type="text"], input[type="email"] { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 15px; }
+  button { margin-top: 18px; width: 100%; padding: 12px; font-size: 16px; border: 0; border-radius: 8px; background: #111; color: #fff; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  .msg { margin-top: 14px; font-size: 14px; }
+  .error { color: #b00020; }
+  .ok { color: #0a7a2e; }
+  #result { display: none; margin-top: 16px; border: 1px solid #ddd; border-radius: 8px; padding: 12px; background: #fafafa; }
+  #checkoutUrl { width: 100%; box-sizing: border-box; font-size: 12px; padding: 8px; }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  .row a { flex: 1; text-align: center; padding: 12px; border-radius: 8px; background: #0a7a2e; color: #fff; text-decoration: none; font-weight: 700; }
+  .note { margin-top: 16px; font-size: 12px; color: #555; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>X Premium Gift</h1>
+  <p class="sub">Select plan → enter recipient → Generate Link → pay on the official checkout page.</p>
+
+  <div id="status" class="msg"></div>
+
+  <label>Plan</label>
+  <div id="plans" class="plans"><p class="sub">Loading plans…</p></div>
+
+  <label for="recipient">Recipient X username (required)</label>
+  <input id="recipient" type="text" placeholder="@username" autocomplete="off" maxlength="16" />
+
+  <button id="generate">Generate Link</button>
+
+  <div id="result">
+    <label for="checkoutUrl">Official checkout URL</label>
+    <input id="checkoutUrl" type="text" readonly />
+    <div class="row">
+      <a id="openCheckout" href="#" target="_blank" rel="noopener">Open Official Checkout</a>
+    </div>
+  </div>
+
+  <p class="note">Payment is completed only on the official checkout page (Stripe). This site never processes card payments and never asks for card details.</p>
+</div>
+
+<script>
+(function () {
+  var plansEl = document.getElementById("plans");
+  var statusEl = document.getElementById("status");
+  var recipientEl = document.getElementById("recipient");
+  var btn = document.getElementById("generate");
+  var resultEl = document.getElementById("result");
+  var urlEl = document.getElementById("checkoutUrl");
+  var openEl = document.getElementById("openCheckout");
+  var selectedPlan = null;
+  var plans = [];
+
+  function setStatus(msg, kind) {
+    statusEl.textContent = msg || "";
+    statusEl.className = "msg " + (kind || "");
+  }
+
+  // Surface Stripe redirect outcome (?checkout=success|cancelled).
+  try {
+    var q = new URLSearchParams(location.search);
+    if (q.get("checkout") === "success") setStatus("Payment finished on the official checkout page. Check your receipt email for confirmation.", "ok");
+    else if (q.get("checkout") === "cancelled") setStatus("Checkout was cancelled. You can generate a new link.", "");
+  } catch (e) {}
+
+  function renderPlans() {
+    plansEl.innerHTML = "";
+    plans.forEach(function (p) {
+      var div = document.createElement("label");
+      div.className = "plan" + (selectedPlan === p.id ? " selected" : "");
+      var radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "plan";
+      radio.value = p.id;
+      radio.checked = selectedPlan === p.id;
+      radio.onchange = function () { selectedPlan = p.id; renderPlans(); };
+      var text = document.createElement("span");
+      var strong = document.createElement("strong");
+      strong.textContent = p.label;
+      var small = document.createElement("small");
+      small.textContent = p.months + " months — " + p.displayAmount + " (" + p.currency.toUpperCase() + ")";
+      text.appendChild(strong);
+      text.appendChild(small);
+      div.appendChild(radio);
+      div.appendChild(text);
+      plansEl.appendChild(div);
+    });
+  }
+
+  fetch("/api/plans").then(function (r) { return r.json(); }).then(function (data) {
+    plans = data.plans || [];
+    if (plans.length) selectedPlan = plans[0].id;
+    renderPlans();
+  }).catch(function () {
+    plansEl.innerHTML = "<p class='sub'>Could not load plans.</p>";
+  });
+
+  btn.onclick = function () {
+    setStatus("");
+    resultEl.style.display = "none";
+    if (!selectedPlan) { setStatus("Please select a plan.", "error"); return; }
+    var recipient = recipientEl.value.trim();
+    if (!recipient) { setStatus("Enter the recipient X username.", "error"); return; }
+    btn.disabled = true;
+    btn.textContent = "Generating…";
+    fetch("/api/create-checkout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        planId: selectedPlan,
+        recipient: recipient
+      })
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); }).then(function (out) {
+      if (!out.ok) { setStatus((out.d && out.d.error) || "Could not create the link.", "error"); return; }
+      urlEl.value = out.d.url;
+      openEl.href = out.d.url;
+      resultEl.style.display = "block";
+      setStatus("Official checkout link generated.", "ok");
+    }).catch(function () {
+      setStatus("Network error. Try again.", "error");
+    }).finally(function () {
+      btn.disabled = false;
+      btn.textContent = "Generate Link";
+    });
+  };
+})();
+</script>
+</body>
+</html>
